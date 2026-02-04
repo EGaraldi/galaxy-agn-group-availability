@@ -89,11 +89,13 @@ function setStatusInAvailability(availability: Availability, personId: string, d
 }
 
 // --- Lightweight self-tests (run once in dev) ---
+// NOTE: No Node-specific globals (like `process`) are used so this runs cleanly in browser builds.
 function runSelfTests() {
   // Only run in non-production to avoid noise.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const env = (typeof process !== "undefined" ? (process as any).env?.NODE_ENV : undefined) as string | undefined;
-  if (env === "production") return;
+  // In Vite, environment mode is available via import.meta.env.MODE.
+  // (Avoid using Node's `process` in browser TS builds.)
+  const mode = (import.meta as any).env?.MODE as string | undefined;
+  if (mode === "production") return;
 
   let a: Availability = {};
   console.assert(getStatusFromAvailability(a, "p1", "2026-02-01") === "available", "Default status should be available");
