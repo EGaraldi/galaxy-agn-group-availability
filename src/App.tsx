@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "./supabase";
 
 /**
  * Group Availability Calendar (starter)
@@ -49,19 +50,6 @@ function saveState(state: any) {
 
 // --- Demo data ---
 type Person = { id: string; name: string; color: string };
-
-const DEFAULT_PEOPLE: Person[] = [
-  { id: "p1", name: "Alice", color: "#1a73e8" },
-  { id: "p2", name: "Ben", color: "#34a853" },
-  { id: "p3", name: "Chiara", color: "#fbbc05" },
-  { id: "p4", name: "Diego", color: "#ea4335" },
-  { id: "p5", name: "Eli", color: "#9334e6" },
-  { id: "p6", name: "Fatima", color: "#12b5cb" },
-  { id: "p7", name: "Gabe", color: "#ff6d01" },
-  { id: "p8", name: "Hana", color: "#5f6368" },
-  { id: "p9", name: "Ibrahim", color: "#0b8043" },
-  { id: "p10", name: "Julia", color: "#c5221f" },
-];
 
 /**
  * Availability model:
@@ -210,37 +198,73 @@ export default function GroupAvailabilityCalendar() {
   const [cursor, setCursor] = useState(() => startOfMonth(new Date()));
 
   // App state
-  const [people, setPeople] = useState<Person[]>(DEFAULT_PEOPLE);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set(DEFAULT_PEOPLE.map((p) => p.id)));
-  const [availability, setAvailability] = useState<Availability>(() => ({}));
+  const [people, setPeople] = useState<Person[]>([]);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [availability, setAvailability] = useState<Availability>({});
+  const [currentUserId, setCurrentUserId] = useState("");
+  
+  type ShowMode = "all" | "none" | "onlyUnavailable";
+  const [showMode, setShowMode] = useState<ShowMode>("all");
 
-  // Current user (demo: pick who you are, then click a day to toggle your status)
-  const [currentUserId, setCurrentUserId] = useState(DEFAULT_PEOPLE[0].id);
 
-  // Load persisted state
+  // Load persisted UI prefs (NOT shared availability)
   useEffect(() => {
     const saved = loadState();
     if (!saved) return;
-    if (Array.isArray(saved.people) && saved.people.length) setPeople(saved.people);
+  
     if (Array.isArray(saved.selected)) setSelectedIds(new Set(saved.selected));
-    if (saved.availability && typeof saved.availability === "object") setAvailability(saved.availability);
     if (saved.currentUserId) setCurrentUserId(saved.currentUserId);
+  
     if (saved.cursor) {
       const d = new Date(saved.cursor);
       if (!Number.isNaN(d.getTime())) setCursor(startOfMonth(d));
     }
+  
+    // Cleanup legacy fields from older versions (optional but recommended)
+    if ("availability" in saved || "people" in saved) {
+      const { availability, people, ...rest } = saved;
+      saveState(rest);
+    }
   }, []);
-
-  // Persist state
+  
+  // Persist UI prefs only (NOT shared availability)
   useEffect(() => {
     saveState({
-      people,
       selected: Array.from(selectedIds),
-      availability,
       currentUserId,
       cursor: cursor.toISOString(),
     });
-  }, [people, selectedIds, availability, currentUserId, cursor]);
+  }, [selectedIds, currentUserId, cursor]);
+
+  useEffect(() => {
+    const loadPeople = async () => {
+      const { data, error } = await supabase
+        .from("people")
+        .select("id,name,color")
+        .order("name", { ascending: true });
+  
+      if (error) {
+        console.error("Failed to load people", error);
+        return;
+      }
+      if (!data || data.length === 0) return;
+  
+      setPeople(data);
+  
+      // Keep selections sane if ids changed
+      setSelectedIds((prev) => {
+        if (prev.size) return prev; // keep user's filter if they already set it
+        return new Set(data.map((p) => p.id)); // otherwise default: select all
+      });
+      
+      setCurrentUserId((prev) =>
+        data.some((p) => p.id === prev) ? prev : ""
+      );
+    };
+  
+    loadPeople();
+  }, []);
+
 
   const selectedPeople = useMemo(() => people.filter((p) => selectedIds.has(p.id)), [people, selectedIds]);
 
@@ -265,6 +289,72 @@ export default function GroupAvailabilityCalendar() {
     return { start, end, cells };
   }, [cursor, today]);
 
+  const refreshAvailability = React.useCallback(async () => {
+    const cells = monthDays.cells;
+    if (!cells.length) return;
+  
+    const startISO = isoDate(cells[0].date);
+    const endISO = isoDate(cells[cells.length - 1].date);
+  
+    const { data, error } = await supabase
+      .from("availability")
+      .select("person_id, day, available")
+      .gte("day", startISO)
+      .lte("day", endISO);
+  
+    if (error) {
+      console.error("Failed to load availability", error);
+      return;
+    }
+  
+    const next: Availability = {};
+    for (const row of data ?? []) {
+      const pid = String(row.person_id);
+      const dayStr = String(row.day);
+      if (!next[pid]) next[pid] = {};
+      next[pid][dayStr] = Boolean(row.available);
+    }
+  
+    setAvailability(next);
+  }, [monthDays]);
+
+  useEffect(() => {
+    refreshAvailability();
+  }, [refreshAvailability]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel("availability-changes")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "availability" },
+        (payload) => {
+          const row = payload.new as any;
+          if (!row?.person_id || !row?.day) return;
+
+          const personId = String(row.person_id);
+          const dayStr = String(row.day);
+          const nextStatus: Status = row.available ? "available" : "unavailable";
+
+          setAvailability((prev) =>
+            setStatusInAvailability(prev, personId, dayStr, nextStatus)
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);  // run once on mount
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      refreshAvailability();
+    }, 10_000); // every 10s
+    return () => window.clearInterval(id);
+  }, [refreshAvailability]);
+
   const toggleSelect = (personId: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -279,17 +369,36 @@ export default function GroupAvailabilityCalendar() {
 
   const getStatus = (personId: string, dateStr: string): Status => getStatusFromAvailability(availability, personId, dateStr);
 
-  const setStatus = (personId: string, dateStr: string, nextStatus: Status) => {
+  const setStatus = async (personId: string, dateStr: string, nextStatus: Status) => {
+    // Optimistic UI update
     setAvailability((prev) => setStatusInAvailability(prev, personId, dateStr, nextStatus));
+  
+    const { error } = await supabase.from("availability").upsert({
+      person_id: personId,
+      day: dateStr,
+      available: nextStatus === "available",
+    });
+  
+    if (error) {
+      console.error("Failed to save availability", error);
+      // Optional: reload to revert optimistic state
+      await refreshAvailability();
+      return;
+    }
+  
+    // Ensure state matches DB (important if multiple users update)
+    await refreshAvailability();
   };
+  
 
   // Click a calendar cell to toggle status for the CURRENT USER only.
   // toggle: available <-> unavailable
-  const onDayClick = (dateObj: Date) => {
+  const onDayClick = async (dateObj: Date) => {
+    if (!currentUserId) return;
     const dStr = isoDate(dateObj);
     const cur = getStatus(currentUserId, dStr);
     const next: Status = cur === "available" ? "unavailable" : "available";
-    setStatus(currentUserId, dStr, next);
+    await setStatus(currentUserId, dStr, next);
   };
 
   const prevMonth = () => setCursor((c) => startOfMonth(new Date(c.getFullYear(), c.getMonth() - 1, 1)));
@@ -330,10 +439,13 @@ export default function GroupAvailabilityCalendar() {
               <div className="rounded-2xl bg-white px-3 py-2 shadow-sm ring-1 ring-black/5">
                 <label className="mr-2 text-xs font-medium text-slate-600">I am</label>
                 <select
-                  className="rounded-lg bg-slate-50 px-2 py-1 text-sm ring-1 ring-black/5"
+                  disabled={!people.length}
                   value={currentUserId}
                   onChange={(e) => setCurrentUserId(e.target.value)}
+                  className="rounded-lg bg-slate-50 px-2 py-1 text-sm ring-1 ring-black/5"
                 >
+                  <option value="">-- Select yourself --</option>
+                
                   {people.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
@@ -348,48 +460,93 @@ export default function GroupAvailabilityCalendar() {
           </div>
 
           {/* Main layout */}
-          <div className="grid grid-cols-12 gap-4">
+          <div className="grid gap-4 md:grid-cols-[260px_1fr]">
             {/* Left rail: people */}
-            <div className="col-span-12 md:col-span-3 lg:col-span-2">
+            <div>
               <div className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
-                <div className="flex items-center justify-between px-4 py-3">
-                  <div className="text-sm font-semibold">People</div>
-                  <div className="flex gap-2 text-xs">
-                    <button className="rounded-lg px-2 py-1 hover:bg-slate-50" onClick={selectAll}>
+                <div className="grid grid-cols-[1fr_auto] items-center gap-3 px-4 py-3 min-h-[44px]">
+                  <div className="min-w-0 text-sm font-semibold">Show</div>
+
+                  <div className="flex items-center gap-1 text-xs">
+                    <button
+                      type="button"
+                      className="rounded-lg px-2 py-1 hover:bg-slate-50"
+                      onClick={() => {
+                        setShowMode("all");
+                        setSelectedIds(new Set(people.map((p) => p.id)));
+                      }}
+                    >
                       All
                     </button>
-                    <button className="rounded-lg px-2 py-1 hover:bg-slate-50" onClick={selectNone}>
+                    
+                    <button
+                      onClick={() => {
+                        setShowMode("onlyUnavailable");
+
+                        const idsWithUnavailable = new Set<string>();
+
+                        for (const p of people) {
+                          for (const cell of monthDays.cells) {
+                            const dStr = isoDate(cell.date);
+                            if (getStatus(p.id, dStr) === "unavailable") {
+                              idsWithUnavailable.add(p.id);
+                              break; // no need to check more days for this person
+                            }
+                          }
+                        }
+
+                        setSelectedIds(idsWithUnavailable);
+                      }}
+                    >
+                      Unavailable
+                    </button>
+
+                    <button
+                      type="button"
+                      className="rounded-lg px-2 py-1 hover:bg-slate-50"
+                      onClick={() => {
+                        setShowMode("none");
+                        setSelectedIds(new Set());
+                      }}
+                    >
                       None
                     </button>
                   </div>
                 </div>
+
                 <div className="border-t border-slate-100" />
                 <div className="max-h-[70vh] overflow-auto p-2">
                   {people.map((p) => {
                     const checked = selectedIds.has(p.id);
                     const isMe = p.id === currentUserId;
                     return (
-                      <label
-                        key={p.id}
-                        className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl px-3 py-2 hover:bg-slate-50 ${
-                          isMe ? "bg-slate-50" : ""
-                        }`}
-                      >
+                    <label
+                      key={p.id}
+                      className={`grid grid-cols-[1fr_24px] items-center gap-3 rounded-xl px-3 py-2 hover:bg-slate-50 ${
+                        isMe ? "bg-slate-50" : ""
+                      }`}
+                    >
+                      <div className="min-w-0">
                         <div className="flex items-center gap-3">
                           <div className="h-3 w-3 rounded-full" style={{ background: p.color }} aria-hidden />
-                          <div className="leading-tight">
-                            <div className="text-sm font-medium">
+                          <div className="min-w-0 leading-tight">
+                            <div className="truncate text-sm font-medium">
                               {p.name} {isMe ? <span className="text-xs text-slate-500">(you)</span> : null}
                             </div>
                           </div>
                         </div>
+                      </div>
+
+                      {/* Fixed-width checkbox column */}
+                      <div className="flex w-[24px] items-center justify-center">
                         <input
                           type="checkbox"
                           checked={checked}
                           onChange={() => toggleSelect(p.id)}
-                          className="h-4 w-4"
+                          className="m-0 h-4 w-4"
                         />
-                      </label>
+                      </div>
+                    </label>
                     );
                   })}
                 </div>
@@ -401,7 +558,7 @@ export default function GroupAvailabilityCalendar() {
                 <div className="mt-2 space-y-2 text-sm text-slate-700">
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-3 rounded-full bg-emerald-500" />
-                    Available (default)
+                    Available
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="inline-block h-3 w-3 rounded-full bg-rose-500" />
@@ -412,7 +569,7 @@ export default function GroupAvailabilityCalendar() {
             </div>
 
             {/* Calendar */}
-            <div className="col-span-12 md:col-span-9 lg:col-span-10">
+            <div>
               <div className="rounded-2xl bg-white shadow-sm ring-1 ring-black/5">
                 {/* Weekday header */}
                 <div className="grid grid-cols-7 border-b border-slate-100">
@@ -431,6 +588,7 @@ export default function GroupAvailabilityCalendar() {
                       <button
                         key={`${dStr}-${idx}`}
                         onClick={() => onDayClick(cell.date)}
+                        disabled={!currentUserId}
                         className={`relative min-h-[120px] border-b border-r border-slate-100 px-2 pb-2 pt-2 text-left hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-black/10 ${
                           idx % 7 === 6 ? "border-r-0" : ""
                         }`}
@@ -448,28 +606,49 @@ export default function GroupAvailabilityCalendar() {
 
                         {/* Selected people rows */}
                         <div className="mt-2 space-y-1">
-                          {selectedPeople.length === 0 ? (
-                            <div className="text-xs text-slate-400">No people selected</div>
-                          ) : (
-                            selectedPeople.map((p) => {
+                          {(() => {
+                            let peopleToRender: Person[] = [];
+
+                            if (showMode === "none") {
+                              peopleToRender = [];
+                            } else if (showMode === "all") {
+                              peopleToRender = selectedPeople;
+                            } else if (showMode === "onlyUnavailable") {
+                              peopleToRender = selectedPeople.filter((p) => {
+                                const st = getStatus(p.id, dStr);
+                                return st === "unavailable";
+                              });
+                            }
+
+                            if (peopleToRender.length === 0) {
+                              return (
+                                <div className="text-xs text-slate-400">
+                                  {showMode === "all" ? "No people selected" : ""}
+                                </div>
+                              );
+                            }
+
+                            return peopleToRender.map((p) => {
                               const st = getStatus(p.id, dStr);
                               const dot = st === "available" ? "bg-emerald-500" : "bg-rose-500";
                               const isMe = p.id === currentUserId;
+
                               return (
                                 <div key={p.id} className="flex items-center gap-2">
                                   <span className={`h-2.5 w-2.5 rounded-full ${dot}`} />
                                   <span
-                                    className={`truncate text-xs ${cell.inMonth ? "text-slate-700" : "text-slate-500"} ${
+                                    className={`truncate text-xs ${cell.inMonth ? "" : "opacity-60"} ${
                                       isMe ? "font-semibold" : ""
                                     }`}
+                                    style={{ color: p.color }}
                                     title={p.name}
                                   >
                                     {p.name}
                                   </span>
                                 </div>
                               );
-                            })
-                          )}
+                            });
+                          })()}
                         </div>
 
                         {!cell.inMonth && <div className="pointer-events-none absolute inset-0 bg-white/50" aria-hidden />}
@@ -480,16 +659,7 @@ export default function GroupAvailabilityCalendar() {
               </div>
 
               {/* Footer help */}
-              <div className="mt-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-black/5">
-                <div className="text-sm font-semibold">What this prototype already does</div>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
-                  <li>Google-Calendar-like monthly grid.</li>
-                  <li>Left rail is a multi-select list of people; only selected people are displayed inside each day cell.</li>
-                  <li>Each person has an availability state per day (available / unavailable; default is available).</li>
-                  <li>Demo “login”: pick yourself in the top-right; clicking a day toggles your state for that date.</li>
-                  <li>Persists to localStorage (so refresh won’t wipe data on the same browser).</li>
-                </ul>
-              </div>
+              <div className="text-sm">Copyright: Enrico Garaldi, 2026</div>
             </div>
           </div>
         </div>
