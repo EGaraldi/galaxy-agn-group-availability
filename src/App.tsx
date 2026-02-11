@@ -581,24 +581,30 @@ export default function GroupAvailabilityCalendar() {
                 <div className="grid grid-cols-7">
                   {monthDays.cells.map((cell, idx) => {
                     const dStr = isoDate(cell.date);
+                    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+                    const isPast = cell.date < startOfToday;
+                    const dim = !cell.inMonth || isPast;
                     return (
                       <button
                         key={`${dStr}-${idx}`}
                         onClick={() => onDayClick(cell.date)}
-                        disabled={!currentUserId}
-                        className={`relative min-h-[120px] border-b border-r border-slate-100 px-2 pb-2 pt-2 text-left hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-black/10 ${
-                          idx % 7 === 6 ? "border-r-0" : ""
-                        }`}
+                        disabled={isPast || !currentUserId}
+                        className={`relative min-h-[120px] border-b border-r border-slate-100 px-2 pb-2 pt-2 text-left focus:outline-none focus:ring-2 focus:ring-black/10 ${
+                          dim ? "" : "hover:bg-slate-50"
+                        } ${idx % 7 === 6 ? "border-r-0" : ""}`}
                       >
                         <div className="flex items-start justify-between">
                           <div
-                            className={`flex h-7 w-7 items-center justify-center rounded-full text-sm ${
-                              cell.isToday ? "bg-[#1a73e8] text-white" : "text-slate-700"
-                            } ${cell.inMonth ? "" : "opacity-40"}`}
-                            title={dStr}
-                          >
-                            {cell.date.getDate()}
-                          </div>
+                          className={`flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium ${
+                            cell.isToday
+                              ? "bg-[#1a73e8] text-white"
+                              : dim
+                              ? "text-slate-600"
+                              : "text-slate-800"
+                          }`}
+                        >
+                          {cell.date.getDate()}
+                        </div>
                         </div>
 
                         {/* Selected people rows */}
@@ -648,7 +654,7 @@ export default function GroupAvailabilityCalendar() {
                           })()}
                         </div>
 
-                        {!cell.inMonth && <div className="pointer-events-none absolute inset-0 bg-white/50" aria-hidden />}
+                        {dim && <div className="pointer-events-none absolute inset-0 bg-white/50" aria-hidden />}
                       </button>
                     );
                   })}
