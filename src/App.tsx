@@ -146,7 +146,9 @@ function PasswordGate({ children }: { children: React.ReactNode }) {
 
   if (!unlocked) {
     return (
-      <div className="min-h-screen bg-[#f6f8fc] text-slate-900">
+      <div className="min-h-screen bg-[#f6f8fc] text-slate-900"
+        style={{ colorScheme: "light" }}
+      >
         <div className="mx-auto flex min-h-screen max-w-lg items-center justify-center p-6">
           <div className="w-full rounded-2xl bg-white p-6 shadow-sm ring-1 ring-black/5">
             <div className="text-lg font-semibold tracking-tight">Group Availability</div>
@@ -404,7 +406,9 @@ export default function GroupAvailabilityCalendar() {
 
   return (
     <PasswordGate>
-      <div className="min-h-screen bg-[#f6f8fc] text-slate-900">
+      <div className="min-h-screen bg-[#f6f8fc] text-slate-900"
+        style={{ colorScheme: "light" }}
+      >
         <div className="mx-auto max-w-[1400px] p-4">
           {/* Top bar */}
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -467,7 +471,7 @@ export default function GroupAvailabilityCalendar() {
                   <div className="flex items-center gap-1 text-xs">
                     <button
                       type="button"
-                      className="rounded-lg px-2 py-1 hover:bg-slate-50"
+                      className="rounded-lg bg-white px-2 py-1 hover:bg-slate-50"
                       onClick={() => {
                         setShowMode("all");
                         setSelectedIds(new Set(people.map((p) => p.id)));
@@ -477,6 +481,8 @@ export default function GroupAvailabilityCalendar() {
                     </button>
                     
                     <button
+                      type="button"
+                      className="rounded-lg bg-white px-2 py-1 hover:bg-slate-50"
                       onClick={() => {
                         setShowMode("onlyUnavailable");
 
@@ -500,7 +506,7 @@ export default function GroupAvailabilityCalendar() {
 
                     <button
                       type="button"
-                      className="rounded-lg px-2 py-1 hover:bg-slate-50"
+                      className="rounded-lg bg-white px-2 py-1 hover:bg-slate-50"
                       onClick={() => {
                         setShowMode("none");
                         setSelectedIds(new Set());
@@ -589,7 +595,7 @@ export default function GroupAvailabilityCalendar() {
                         key={`${dStr}-${idx}`}
                         onClick={() => onDayClick(cell.date)}
                         disabled={isPast || !currentUserId}
-                        className={`relative min-h-[120px] border-b border-r border-slate-100 px-2 pb-2 pt-2 text-left focus:outline-none focus:ring-2 focus:ring-black/10 ${
+                        className={`relative min-h-[120px] bg-white border-b border-r border-slate-100 px-2 pb-2 pt-2 text-left focus:outline-none focus:ring-2 focus:ring-black/10 ${
                           dim ? "" : "hover:bg-slate-50"
                         } ${idx % 7 === 6 ? "border-r-0" : ""}`}
                       >
