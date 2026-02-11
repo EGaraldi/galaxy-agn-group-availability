@@ -364,9 +364,6 @@ export default function GroupAvailabilityCalendar() {
     });
   };
 
-  const selectAll = () => setSelectedIds(new Set(people.map((p) => p.id)));
-  const selectNone = () => setSelectedIds(new Set());
-
   const getStatus = (personId: string, dateStr: string): Status => getStatusFromAvailability(availability, personId, dateStr);
 
   const setStatus = async (personId: string, dateStr: string, nextStatus: Status) => {
